@@ -1,0 +1,1 @@
+Ten kod tworzy sterownik znakowy o nazwie led_driver, który odbiera znaki zapisane do urządzenia /dev/led_driver. Gdy otrzyma litery 'I' lub 'B', wysyła odpowiednią wartość do pliku sysfs kontrolującego diodę LED. Dioda LED musi być podłączona do odpowiedniego portu GPIO i powinna być dostępna poprzez interfejs sysfs.
