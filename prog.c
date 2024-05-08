@@ -1,93 +1,92 @@
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/fs.h>
-#include <linux/device.h>
-#include <linux/uaccess.h>
 
-#define DEVICE_NAME "led_driver"
-#define LED_SYSFS_FILE "/sys/class/leds/led0/brightness"
+#include <linux/module.h>   /* Needed by all modules */
+#include <linux/kernel.h>   /* Needed for KERN_INFO */
+#include <linux/fs.h>       /* Needed for file operations */
+#include <linux/cdev.h>     /* Needed for character device */
+#include <linux/uaccess.h>  /* Needed for copy_to_user and copy_from_user */
+#include <linux/io.h>
+#include <linux/delay.h>
 
-static ssize_t led_driver_read(struct file *file, char *buffer, size_t length, loff_t *offset)
+#define GPIO_ADDR_BASE              0x4804C000
+#define ADDR_SIZE                   0X1000
+#define GPIO_SETDATAOUT_OFFSET      0X194
+#define GPIO_CLEARDATAOUT_OFFSET    0X190
+#define GPIO_OE_OFFSET              0X134
+#define GPIO_DATAIN_OFFSET          0X138
+
+#define LED_VALUE_OFF               (1 << 24)
+#define LED_VALUE_ON                ~(1 << 24)
+
+void __iomem *base_addr;
+static dev_t dev_num;
+static struct cdev my_cdev;
+
+static int hello_open(struct inode *inode, struct file *file)
 {
-    char led_status;
-    int error_count = 0;
-    ssize_t bytes_read = 0;
-    int fd;
-
-    fd = open(LED_SYSFS_FILE, O_RDONLY);
-    if (fd < 0) {
-        return -EFAULT;
-    }
-
-    error_count = read(fd, &led_status, sizeof(led_status));
-    if (error_count < 0) {
-        close(fd);
-        return -EFAULT;
-    }
-
-    close(fd);
-
-    bytes_read = copy_to_user(buffer, &led_status, sizeof(led_status));
-    if (bytes_read != 0) {
-        return -EFAULT;
-    }
-
     return 0;
 }
 
-static ssize_t led_driver_write(struct file *file, const char *buffer, size_t length, loff_t *offset)
+static ssize_t hello_read(struct file *file, char __user *buf, size_t len, loff_t *offset)
 {
-    char command;
-    int ret;
-    int fd;
-
-    fd = open(LED_SYSFS_FILE, O_WRONLY);
-    if (fd < 0) {
+    char data;
+    if (copy_from_user(&data, buf, 1))
         return -EFAULT;
+
+    if (data == 'I' || data == 'B') {
+        // Turn LED on
+        writel(LED_VALUE_ON, base_addr + GPIO_CLEARDATAOUT_OFFSET);
+    } else {
+        // Turn LED off
+        writel(LED_VALUE_OFF, base_addr + GPIO_SETDATAOUT_OFFSET);
     }
 
-    ret = copy_from_user(&command, buffer, sizeof(command));
-    if (ret != 0) {
-        close(fd);
-        return -EFAULT;
-    }
-
-    ret = write(fd, &command, sizeof(command));
-    if (ret < 0) {
-        close(fd);
-        return -EFAULT;
-    }
-
-    close(fd);
-
-    return length;
+    return 1;
 }
 
-static struct file_operations led_driver_fops = {
-    .read = led_driver_read,
-    .write = led_driver_write,
+static const struct file_operations hello_fops = {
+    .owner = THIS_MODULE,
+    .open = hello_open,
+    .read = hello_read,
 };
 
-static int __init led_driver_init(void)
+int init_module(void)
 {
-    int ret;
+    printk(KERN_EMERG "Hello\n");
 
-    ret = register_chrdev(0, DEVICE_NAME, &led_driver_fops);
-    if (ret < 0) {
-        return ret;
+    base_addr = ioremap(GPIO_ADDR_BASE, ADDR_SIZE);
+
+    // Configure GPIO Pin for LED
+    writel(LED_VALUE_OFF, base_addr + GPIO_OE_OFFSET); // Set pin as output
+    writel(LED_VALUE_ON, base_addr + GPIO_SETDATAOUT_OFFSET); // Turn LED off initially
+
+    // Initialize character device
+    if (alloc_chrdev_region(&dev_num, 0, 1, "hello_led") < 0) {
+        printk(KERN_ALERT "Failed to allocate character device region\n");
+        return -1;
+    }
+
+    cdev_init(&my_cdev, &hello_fops);
+    if (cdev_add(&my_cdev, dev_num, 1) < 0) {
+        printk(KERN_ALERT "Failed to add character device\n");
+        unregister_chrdev_region(dev_num, 1);
+        return -1;
     }
 
     return 0;
 }
 
-static void __exit led_driver_exit(void)
+void cleanup_module(void)
 {
-    unregister_chrdev(0, DEVICE_NAME);
-}
+    printk(KERN_EMERG "Goodbye\n");
 
-module_init(led_driver_init);
-module_exit(led_driver_exit);
+    // Turn off LED
+    writel(LED_VALUE_OFF, base_addr + GPIO_CLEARDATAOUT_OFFSET);
+
+    // Cleanup character device
+    cdev_del(&my_cdev);
+    unregister_chrdev_region(dev_num, 1);
+}
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Ivan Birkovskyi");
-MODULE_DESCRIPTION("LED Driver with Character Device Interface");
+MODULE_DESCRIPTION("LED driver with character device interface");
